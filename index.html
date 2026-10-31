@@ -94,6 +94,12 @@ tr:last-child td { border-bottom: 0; }
 .transfer:last-child { border-bottom: 0; padding-bottom: 0; }
 .transfer ul { list-style: none; margin: 6px 0 0; padding: 0; }
 .transfer li { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; padding: 2px 0; }
+.day-head { display: flex; justify-content: space-between; font-size: 14px; font-weight: 600; color: var(--muted); margin: 16px 4px 6px; font-variant-numeric: tabular-nums; }
+.day .list { margin: 0; }
+.detail li { gap: 12px; }
+.detail li span:first-child { min-width: 0; overflow-wrap: anywhere; }
+.subtotal { display: flex; justify-content: space-between; font-weight: 600; font-variant-numeric: tabular-nums; border-top: 1px dashed var(--border); margin-top: 6px; padding-top: 6px; }
+.subtotal.grand { border-top: 2px solid var(--border); margin-top: 12px; padding-top: 10px; font-size: 17px; }
 .note { background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
 .empty { text-align: center; color: var(--muted); padding: 28px 0; }
 .update { display: block; width: 100%; border-radius: 0; }
@@ -121,7 +127,7 @@ tr:last-child td { border-bottom: 0; }
 const SUPABASE_URL = 'https://vlxfnyvlijbnchjngmcn.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_8iftxZJUDFUbN6gvjSP0qQ_VtAOvvZR';
 
-const VERSION = '2026-10-31.5'; // bump on every release so pages left open notice the update
+const VERSION = '2026-10-31.6'; // bump on every release so pages left open notice the update
 const MAX_TRIPS = 2; // per phone; one phone counts as one person
 // Keys are the values stored in the database; values are what people see.
 const CATEGORIES = { Food: '餐飲', Transport: '交通', Lodging: '住宿', Activities: '門票活動', Shopping: '購物', Other: '其他' };
@@ -141,6 +147,7 @@ const money = n => 'NT$' + Math.round(n).toLocaleString('zh-TW');
 const sum = xs => xs.reduce((a, b) => a + b, 0);
 const today = () => new Date().toLocaleDateString('en-CA');
 const fmtDay = d => new Date(d + 'T00:00').toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' });
+const weekday = d => new Date(d + 'T00:00').toLocaleDateString('zh-TW', { weekday: 'short' });
 const randomCode = n => [...crypto.getRandomValues(new Uint8Array(n))].map(b => CODE_CHARS[b % 32]).join('');
 
 function store(key, value) {
@@ -395,15 +402,21 @@ function syncNew() {
 function billsTab() {
   if (!state.bills.length) return '<p class="empty">還沒有帳單，先記一筆吧。</p>';
   const mine = myBills();
+  const days = new Map(); // bills are already newest first
+  for (const b of state.bills) days.set(b.spent_on, [...(days.get(b.spent_on) || []), b]);
   return `<p class="muted">只有記帳的人可以修改或刪除自己記的帳單。</p>
-    <ul class="list">${state.bills.map(b => `
-    <li class="card row bill">
-      <div class="grow"><strong>${esc(b.description || catLabel(b.category))}</strong>
-        <span class="muted">${esc(catLabel(b.category))} · ${esc(payerName(b.payer_id))} 付 · ${fmtDay(b.spent_on)}</span></div>
-      <div class="amt">${money(b.amount)}</div>
-      ${mine.has(b.id) || b.shared ? `<button class="icon" data-edit-bill="${b.id}" aria-label="編輯帳單">✎</button>
-        <button class="icon" data-del-bill="${b.id}" aria-label="刪除帳單">×</button>` : ''}
-    </li>`).join('')}</ul>`;
+    ${[...days].map(([day, bills]) => `
+    <section class="day">
+      <div class="day-head"><span>${fmtDay(day)}（${weekday(day)}）</span><span>${money(sum(bills.map(b => Number(b.amount))))}</span></div>
+      <ul class="list">${bills.map(b => `
+        <li class="card row bill">
+          <div class="grow"><strong>${esc(b.description || catLabel(b.category))}</strong>
+            <span class="muted">${esc(catLabel(b.category))} · ${esc(payerName(b.payer_id))} 付</span></div>
+          <div class="amt">${money(b.amount)}</div>
+          ${mine.has(b.id) || b.shared ? `<button class="icon" data-edit-bill="${b.id}" aria-label="編輯帳單">✎</button>
+            <button class="icon" data-del-bill="${b.id}" aria-label="刪除帳單">×</button>` : ''}
+        </li>`).join('')}</ul>
+    </section>`).join('')}`;
 }
 
 function groupBy(keyOf) {
@@ -480,6 +493,18 @@ function splitTab() {
           <ul>${d.to.map(c => `<li><span>→ ${esc(c.name)}</span><span>${money(c.amount)}</span></li>`).join('')}</ul>
         </div>`).join('') : '<p class="muted">大家都已打平，不用再轉帳。</p>'}
       <p class="muted">金額四捨五入到 NT$1。</p>
+    </section>
+    <section class="card">
+      <h2>付款明細</h2>
+      ${state.payers.map(p => {
+        const paid = state.bills.filter(b => b.payer_id === p.id).reverse(); // oldest first
+        return paid.length ? `
+        <div class="transfer detail"><strong>${esc(p.name)}</strong>
+          <ul>${paid.map(b => `<li><span>${fmtDay(b.spent_on)} ${esc(b.description || catLabel(b.category))}</span><span>${money(b.amount)}</span></li>`).join('')}</ul>
+          <div class="subtotal"><span>小計</span><span>${money(sum(paid.map(b => Number(b.amount))))}</span></div>
+        </div>` : '';
+      }).join('')}
+      <div class="subtotal grand"><span>合計</span><span>${money(t)}</span></div>
     </section>`;
 }
 
