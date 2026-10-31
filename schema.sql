@@ -26,6 +26,7 @@ create table bills (
   amount numeric(12, 2) not null check (amount > 0 and amount < 10000000),
   spent_on date not null default current_date,
   owner_key text,                                                  -- secret kept on the phone that entered it
+  shared boolean generated always as (owner_key is null) stored,   -- no author recorded: anyone in the trip may edit
   created_at timestamptz not null default now()
 );
 
@@ -55,7 +56,7 @@ $$;
 
 create function private.owns_bill(bid uuid) returns boolean
 language sql stable security definer set search_path = public as $$
-  select exists (select 1 from bills where id = bid and owner_key = private.header('x-owner-key'))
+  select exists (select 1 from bills where id = bid and (owner_key is null or owner_key = private.header('x-owner-key')))
 $$;
 
 grant execute on all functions in schema private to anon;
@@ -64,7 +65,7 @@ grant execute on all functions in schema private to anon;
 grant select (id, name, people, code, created_at), insert (name, code, owner_key), update (people), delete
   on sessions to anon;
 grant select, insert, delete on payers to anon;
-grant select (id, session_id, payer_id, description, category, amount, spent_on, created_at),
+grant select (id, session_id, payer_id, description, category, amount, spent_on, shared, created_at),
   insert (id, session_id, payer_id, description, category, amount, spent_on, owner_key),
   update (payer_id, description, category, amount, spent_on), delete
   on bills to anon;

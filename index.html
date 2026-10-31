@@ -96,6 +96,7 @@ tr:last-child td { border-bottom: 0; }
 .transfer li { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; padding: 2px 0; }
 .note { background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
 .empty { text-align: center; color: var(--muted); padding: 28px 0; }
+.update { display: block; width: 100%; border-radius: 0; }
 #toast {
   position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%);
   max-width: calc(100% - 32px); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px;
@@ -111,6 +112,7 @@ tr:last-child td { border-bottom: 0; }
 </head>
 <body>
 <header class="top"><strong>旅遊分帳</strong><div><button id="homeBtn" class="ghost" hidden>切換行程</button><button id="inviteBtn" class="ghost" hidden>邀請朋友</button></div></header>
+<button id="updateBar" class="update" hidden>有新版本，點這裡更新</button>
 <main id="app"></main>
 <div id="toast" role="status"></div>
 <script>
@@ -119,6 +121,7 @@ tr:last-child td { border-bottom: 0; }
 const SUPABASE_URL = 'https://vlxfnyvlijbnchjngmcn.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_8iftxZJUDFUbN6gvjSP0qQ_VtAOvvZR';
 
+const VERSION = '2026-10-31.5'; // bump on every release so pages left open notice the update
 const MAX_TRIPS = 2; // per phone; one phone counts as one person
 // Keys are the values stored in the database; values are what people see.
 const CATEGORIES = { Food: '餐飲', Transport: '交通', Lodging: '住宿', Activities: '門票活動', Shopping: '購物', Other: '其他' };
@@ -155,12 +158,13 @@ function myTrips() {
 const saveTrips = trips => store('trips', JSON.stringify(trips));
 const removeTrip = id => saveTrips(myTrips().filter(t => t.id !== id));
 
-// Bills this phone entered. Only these can be edited or deleted here (the database checks too).
+// Bills this phone entered. Only these (and shared bills from before authors were recorded)
+// can be edited or deleted here; the database checks too.
 function myBills() {
   try { return new Set(JSON.parse(store('mybills')) || []); } catch { return new Set(); }
 }
 const addMyBill = id => store('mybills', JSON.stringify([...myBills(), id]));
-const BILL_COLUMNS = 'id,session_id,payer_id,description,category,amount,spent_on,created_at';
+const BILL_COLUMNS = 'id,session_id,payer_id,description,category,amount,spent_on,shared,created_at';
 
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -180,7 +184,12 @@ async function api(path, { method = 'GET', body, prefer, code, owner } = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { method, headers, body: body && JSON.stringify(body) });
   if (!res.ok) {
     let msg = `連線失敗 (${res.status})`;
-    try { msg = (await res.json()).message || msg; } catch {}
+    try {
+      const err = await res.json();
+      // Permission errors usually mean this page is older than the database rules.
+      msg = err.code === '42501' ? '無法儲存，請重新整理頁面後再試一次' : err.message || msg;
+    } catch {}
+    checkForUpdate();
     throw new Error(msg);
   }
   return res.status === 204 || res.status === 201 && !prefer ? null : res.json();
@@ -392,7 +401,7 @@ function billsTab() {
       <div class="grow"><strong>${esc(b.description || catLabel(b.category))}</strong>
         <span class="muted">${esc(catLabel(b.category))} · ${esc(payerName(b.payer_id))} 付 · ${fmtDay(b.spent_on)}</span></div>
       <div class="amt">${money(b.amount)}</div>
-      ${mine.has(b.id) ? `<button class="icon" data-edit-bill="${b.id}" aria-label="編輯帳單">✎</button>
+      ${mine.has(b.id) || b.shared ? `<button class="icon" data-edit-bill="${b.id}" aria-label="編輯帳單">✎</button>
         <button class="icon" data-del-bill="${b.id}" aria-label="刪除帳單">×</button>` : ''}
     </li>`).join('')}</ul>`;
 }
@@ -436,16 +445,15 @@ function settle(people) {
 
 function splitTab() {
   const people = state.session.people;
-  const min = Math.max(1, state.payers.length);
   const stepper = `
     <section class="card">
       <h2>總人數</h2>
       <div class="stepper">
-        <button data-step="-1" aria-label="減少人數" ${people <= min ? 'disabled' : ''}>−</button>
+        <button data-step="-1" aria-label="減少人數" ${people <= 1 ? 'disabled' : ''}>−</button>
         <output>${people}</output>
         <button data-step="1" aria-label="增加人數" ${people >= 50 ? 'disabled' : ''}>+</button>
       </div>
-      <p class="muted">包含沒付過錢的人。行程裡的每個人都會看到同一個人數。</p>
+      <p class="muted">包含沒付過錢的人，不能少於付款人數（${state.payers.length} 位）。行程裡的每個人都會看到同一個人數。</p>
     </section>`;
   if (!state.bills.length) return stepper + '<p class="empty">記第一筆帳後就能分帳。</p>';
   if (people < state.payers.length) {
@@ -507,13 +515,21 @@ async function saveBill(form) {
   }
   store(`payer:${state.session.id}`, payerId);
   Object.assign(state, await load(state.trip), { fresh: false, editing: null, tab: edited ? 'bills' : 'add' });
+  let msg = edited ? '已更新帳單' : `已儲存 ${money(amount)}`;
+  // A new payer can't push the payer count above the total people.
+  if (state.payers.length > state.session.people) {
+    state.session.people = state.payers.length;
+    await api(`sessions?id=eq.${state.session.id}`, { method: 'PATCH', body: { people: state.session.people }, code });
+    msg += `，總人數自動調整為 ${state.session.people} 人`;
+  }
   renderSession();
-  toast(edited ? '已更新帳單' : `已儲存 ${money(amount)}`);
+  toast(msg);
 }
 
 async function setPeople(step) {
   const people = state.session.people + step;
-  if (people < Math.max(1, state.payers.length) || people > 50) return;
+  if (people < state.payers.length) return toast(`總人數不能少於付款人數（目前有 ${state.payers.length} 位付款人）`);
+  if (people < 1 || people > 50) return;
   state.session.people = people;
   renderSession();
   await api(`sessions?id=eq.${state.session.id}`, { method: 'PATCH', body: { people }, code: state.trip.code });
@@ -578,7 +594,20 @@ function go(id, fresh = false) {
   });
 }
 
-document.addEventListener('visibilitychange', refresh);
+// Pages left open on a phone keep running old code; offer a reload when a newer version is published.
+async function checkForUpdate() {
+  try {
+    const html = await (await fetch(location.pathname, { cache: 'no-store' })).text();
+    const latest = html.match(/const VERSION = '([^']+)'/)?.[1];
+    if (latest && latest !== VERSION) document.getElementById('updateBar').hidden = false;
+  } catch {}
+}
+document.getElementById('updateBar').addEventListener('click', () => location.reload());
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) checkForUpdate();
+  refresh();
+});
 if (SUPABASE_URL.includes('YOUR-PROJECT')) {
   app.innerHTML = '<p class="note">Set SUPABASE_URL and SUPABASE_ANON_KEY at the top of this file first.</p>';
 } else {
