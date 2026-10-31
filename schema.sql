@@ -4,6 +4,8 @@ create table sessions (
   id uuid primary key default gen_random_uuid(),
   name text not null check (length(name) between 1 and 40),
   people int not null default 2 check (people between 1 and 50),
+  code text not null unique check (code ~ '^[A-HJ-NP-Z2-9]{4}$'), -- invite code, also the trip's password
+  owner_key text not null check (length(owner_key) >= 20),         -- secret kept on the creator's phone
   created_at timestamptz not null default now()
 );
 
@@ -29,25 +31,44 @@ create table bills (
 create index on payers (session_id);
 create index on bills (session_id);
 
--- At most 2 sessions can exist at the same time.
-create function enforce_max_sessions() returns trigger language plpgsql as $$
-begin
-  if (select count(*) from sessions) >= 2 then
-    raise exception '最多只能同時有 2 個行程，請先刪除一個。';
-  end if;
-  return new;
-end $$;
+-- Trips are private: every request must send the trip's code in the x-trip-code header,
+-- and deleting a trip also needs the creator's key in x-owner-key.
+-- Helpers live outside the public schema so they are not exposed through the API.
+create schema private;
+grant usage on schema private to anon;
 
-create trigger max_sessions before insert on sessions
-  for each row execute function enforce_max_sessions();
+create function private.header(name text) returns text language sql stable as $$
+  select current_setting('request.headers', true)::json ->> name
+$$;
 
--- No login: anyone who has the page link can read and write.
-grant select, insert, update, delete on sessions, payers, bills to anon;
+create function private.in_trip(sid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from sessions where id = sid and code = private.header('x-trip-code'))
+$$;
+
+create function private.owns_trip(sid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from sessions where id = sid
+    and code = private.header('x-trip-code') and owner_key = private.header('x-owner-key'))
+$$;
+
+grant execute on all functions in schema private to anon;
+
+-- owner_key can be written but never read back.
+grant select (id, name, people, code, created_at), insert (name, code, owner_key), update (people), delete
+  on sessions to anon;
+grant select, insert, delete on payers, bills to anon;
 
 alter table sessions enable row level security;
 alter table payers enable row level security;
 alter table bills enable row level security;
 
-create policy "link access" on sessions for all to anon using (true) with check (true);
-create policy "link access" on payers for all to anon using (true) with check (true);
-create policy "link access" on bills for all to anon using (true) with check (true);
+create policy "members read" on sessions for select to anon using (code = private.header('x-trip-code'));
+create policy "anyone creates" on sessions for insert to anon with check (code = private.header('x-trip-code'));
+create policy "members edit" on sessions for update to anon using (private.in_trip(id));
+create policy "creator deletes" on sessions for delete to anon using (private.owns_trip(id));
+
+create policy "members only" on payers for all to anon
+  using (private.in_trip(session_id)) with check (private.in_trip(session_id));
+create policy "members only" on bills for all to anon
+  using (private.in_trip(session_id)) with check (private.in_trip(session_id));

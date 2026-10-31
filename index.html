@@ -102,10 +102,15 @@ tr:last-child td { border-bottom: 0; }
   font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none;
 }
 #toast.show { opacity: 1; }
+.code { font: 700 32px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .2em; text-align: center; margin: 12px 0; }
+.invite p { margin: 0; font-size: 14px; }
+.invite button { width: 100%; }
+.code-input { text-transform: uppercase; letter-spacing: .2em; font-weight: 600; }
+.code-input::placeholder { text-transform: none; letter-spacing: normal; font-weight: 400; }
 </style>
 </head>
 <body>
-<header class="top"><strong>旅遊分帳</strong><div><button id="homeBtn" class="ghost" hidden>切換行程</button><button id="shareBtn" class="ghost">分享連結</button></div></header>
+<header class="top"><strong>旅遊分帳</strong><div><button id="homeBtn" class="ghost" hidden>切換行程</button><button id="inviteBtn" class="ghost" hidden>邀請朋友</button></div></header>
 <main id="app"></main>
 <div id="toast" role="status"></div>
 <script>
@@ -114,17 +119,18 @@ tr:last-child td { border-bottom: 0; }
 const SUPABASE_URL = 'https://vlxfnyvlijbnchjngmcn.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_8iftxZJUDFUbN6gvjSP0qQ_VtAOvvZR';
 
-const MAX_SESSIONS = 2;
+const MAX_TRIPS = 2; // per phone; one phone counts as one person
 // Keys are the values stored in the database; values are what people see.
 const CATEGORIES = { Food: '餐飲', Transport: '交通', Lodging: '住宿', Activities: '門票活動', Shopping: '購物', Other: '其他' };
 const NEW = '__new__';
 const catLabel = c => CATEGORIES[c] ?? c; // custom categories are stored as typed
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O or 1/I look-alikes
+const CODE = /^[A-HJ-NP-Z2-9]{4}$/;
 
 const app = document.getElementById('app');
 const homeBtn = document.getElementById('homeBtn');
-const shareBtn = document.getElementById('shareBtn');
-let state = null; // { session, payers, bills, tab }
+const inviteBtn = document.getElementById('inviteBtn');
+let state = null; // { trip, session, payers, bills, tab, fresh }
 let timer = null;
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -132,10 +138,22 @@ const money = n => 'NT$' + Math.round(n).toLocaleString('zh-TW');
 const sum = xs => xs.reduce((a, b) => a + b, 0);
 const today = () => new Date().toLocaleDateString('en-CA');
 const fmtDay = d => new Date(d + 'T00:00').toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' });
+const randomCode = n => [...crypto.getRandomValues(new Uint8Array(n))].map(b => CODE_CHARS[b % 32]).join('');
 
 function store(key, value) {
   try { return value === undefined ? localStorage.getItem(key) : localStorage.setItem(key, value); } catch { return null; }
 }
+
+// Secret that proves this phone created a trip (needed to delete it).
+let device = store('device');
+if (!device) { device = randomCode(32); store('device', device); }
+
+// Trips this phone has joined: [{ id, code, name, owner }].
+function myTrips() {
+  try { return JSON.parse(store('trips')) || []; } catch { return []; }
+}
+const saveTrips = trips => store('trips', JSON.stringify(trips));
+const removeTrip = id => saveTrips(myTrips().filter(t => t.id !== id));
 
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -145,71 +163,144 @@ function toast(msg) {
   toast.t = setTimeout(() => t.classList.remove('show'), 2400);
 }
 
-async function api(path, { method = 'GET', body, prefer } = {}) {
+// The database only shows a trip to requests that carry its code (see schema.sql).
+async function api(path, { method = 'GET', body, prefer, code, owner } = {}) {
   const headers = { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
   if (SUPABASE_ANON_KEY.startsWith('eyJ')) headers.Authorization = `Bearer ${SUPABASE_ANON_KEY}`; // legacy JWT anon key
   if (prefer) headers.Prefer = prefer;
+  if (code) headers['x-trip-code'] = code;
+  if (owner) headers['x-owner-key'] = owner;
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { method, headers, body: body && JSON.stringify(body) });
   if (!res.ok) {
     let msg = `連線失敗 (${res.status})`;
     try { msg = (await res.json()).message || msg; } catch {}
     throw new Error(msg);
   }
-  return res.status === 204 ? null : res.json();
+  return res.status === 204 || res.status === 201 && !prefer ? null : res.json();
 }
-const insert = (table, row) => api(table, { method: 'POST', body: row, prefer: 'return=representation' }).then(r => r[0]);
+const insert = (table, row, code) => api(table, { method: 'POST', body: row, prefer: 'return=representation', code }).then(r => r[0]);
+const findTrip = (code, id = '') => api(`sessions?select=id,name,people,code,created_at${id && `&id=eq.${id}`}`, { code }).then(r => r[0]);
 
-// ---------- Home: list of sessions ----------
+// ---------- Home: this phone's trips ----------
 
 async function showHome() {
   state = null;
-  homeBtn.hidden = true;
+  homeBtn.hidden = inviteBtn.hidden = true;
   app.innerHTML = '<p class="empty">載入中…</p>';
-  const sessions = await api('sessions?select=id,name,created_at&order=created_at');
-  const full = sessions.length >= MAX_SESSIONS;
+  const trips = myTrips();
+  const found = await Promise.all(trips.map(t => findTrip(t.code)));
+  const gone = trips.filter((t, i) => !found[i]);
+  const live = trips.flatMap((t, i) => found[i] ? [{ ...t, name: found[i].name, created_at: found[i].created_at }] : []);
+  saveTrips(live.map(({ created_at, ...t }) => t));
+  if (gone.length) toast(`「${gone.map(t => t.name).join('、')}」已被建立者刪除`);
+  const full = live.length >= MAX_TRIPS;
   app.innerHTML = `
-    <h1>行程</h1>
-    <p class="muted">已使用 ${sessions.length} / ${MAX_SESSIONS} 個行程</p>
-    <ul class="list">${sessions.map(s => `
+    <h1>我的行程</h1>
+    <p class="muted">已加入 ${live.length} / ${MAX_TRIPS} 個行程</p>
+    <ul class="list">${live.map(t => `
       <li class="card row">
-        <button class="grow pick" data-open="${s.id}"><strong>${esc(s.name)}</strong>
-          <span class="muted">${fmtDay(s.created_at.slice(0, 10))} 開始</span></button>
-        <button class="ghost danger" data-del-session="${s.id}" data-name="${esc(s.name)}">刪除</button>
+        <button class="grow pick" data-open="${t.id}"><strong>${esc(t.name)}</strong>
+          <span class="muted">${t.owner ? '你建立的 · ' : ''}${fmtDay(t.created_at.slice(0, 10))} 開始</span></button>
+        <button class="ghost danger" data-${t.owner ? 'del-trip' : 'leave'}="${t.id}">${t.owner ? '刪除' : '退出'}</button>
       </li>`).join('')}</ul>
     ${full
-      ? `<p class="note">最多同時 ${MAX_SESSIONS} 個行程。請先刪除已結束的行程，再開新的。</p>`
-      : `<form id="newSession" class="card stack">
-           <label>新行程<input name="name" required maxlength="40" placeholder="例：東京 2026/12" autocomplete="off"></label>
+      ? `<p class="note">每支手機最多加入 ${MAX_TRIPS} 個行程。請先退出或刪除一個，才能加入或建立新的。</p>`
+      : `<form id="joinTrip" class="card stack">
+           <label>加入朋友的行程<input name="code" class="code-input" required maxlength="6" placeholder="輸入 4 碼代碼"
+             autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false"></label>
+           <button>加入</button>
+         </form>
+         <form id="newTrip" class="card stack">
+           <label>建立新行程<input name="name" required maxlength="40" placeholder="例：東京 2026/12" autocomplete="off"></label>
            <button>建立行程</button>
          </form>`}`;
 }
 
-// ---------- Session ----------
-
-async function load(id) {
-  const [sessions, payers, bills] = await Promise.all([
-    api(`sessions?id=eq.${id}&select=*`),
-    api(`payers?session_id=eq.${id}&select=*&order=created_at`),
-    api(`bills?session_id=eq.${id}&select=*&order=spent_on.desc,created_at.desc`),
-  ]);
-  return { session: sessions[0], payers, bills };
+async function joinTrip(form) {
+  const code = new FormData(form).get('code').toUpperCase().replace(/[\s-]/g, '');
+  if (!CODE.test(code)) return toast('代碼是 4 個英文字母或數字');
+  const trips = myTrips();
+  const mine = trips.find(t => t.code === code);
+  if (mine) return go(mine.id);
+  if (trips.length >= MAX_TRIPS) return toast(`每支手機最多加入 ${MAX_TRIPS} 個行程`);
+  const s = await findTrip(code);
+  if (!s) return toast('找不到這個代碼的行程，請確認代碼');
+  saveTrips([...trips, { id: s.id, code, name: s.name, owner: false }]);
+  go(s.id);
 }
 
-async function openSession(id) {
-  homeBtn.hidden = false;
+async function createTrip(form) {
+  const name = new FormData(form).get('name').trim();
+  if (!name) return;
+  if (myTrips().length >= MAX_TRIPS) return toast(`每支手機最多加入 ${MAX_TRIPS} 個行程`);
+  // 4-character codes can occasionally collide with an existing trip; just pick another.
+  let code;
+  for (let tries = 1; ; tries++) {
+    code = randomCode(4);
+    try {
+      await api('sessions', { method: 'POST', body: { name, code, owner_key: device }, code });
+      break;
+    } catch (err) {
+      if (tries === 3 || !/duplicate/.test(err.message)) throw err;
+    }
+  }
+  const s = await findTrip(code);
+  saveTrips([...myTrips(), { id: s.id, code, name, owner: true }]);
+  go(s.id, true);
+}
+
+async function deleteTrip(id) {
+  const t = myTrips().find(t => t.id === id);
+  if (!confirm(`確定要刪除「${t.name}」和所有帳單嗎？所有成員都會看不到，刪除後無法復原。`)) return;
+  await api(`sessions?id=eq.${id}`, { method: 'DELETE', code: t.code, owner: device });
+  if (await findTrip(t.code, id)) return toast('只有建立行程的那支手機可以刪除');
+  removeTrip(id);
+  go(null);
+}
+
+function leaveTrip(id) {
+  const t = myTrips().find(t => t.id === id);
+  if (!confirm(`退出「${t.name}」？帳單會保留，之後可以用代碼重新加入。`)) return;
+  removeTrip(id);
+  go(null);
+}
+
+// ---------- Trip ----------
+
+async function load(trip) {
+  const [session, payers, bills] = await Promise.all([
+    findTrip(trip.code, trip.id),
+    api(`payers?session_id=eq.${trip.id}&select=*&order=created_at`, { code: trip.code }),
+    api(`bills?session_id=eq.${trip.id}&select=*&order=spent_on.desc,created_at.desc`, { code: trip.code }),
+  ]);
+  return { session, payers, bills };
+}
+
+function tripDeleted() {
+  removeTrip(state.trip.id);
+  toast(`「${state.trip.name}」已被建立者刪除`);
+  go(null);
+}
+
+async function openSession(id, fresh) {
+  const trip = myTrips().find(t => t.id === id);
+  if (!trip) return go(null);
+  homeBtn.hidden = inviteBtn.hidden = false;
   app.innerHTML = '<p class="empty">載入中…</p>';
-  const data = await load(id);
-  if (!data.session) return go(null);
-  state = { ...data, tab: data.bills.length ? 'bills' : 'add' };
+  state = { trip };
+  const data = await load(trip);
+  if (!data.session) return tripDeleted();
+  Object.assign(state, data, { tab: data.bills.length ? 'bills' : 'add', fresh });
   renderSession();
   timer = setInterval(refresh, 15000);
 }
 
 async function refresh() {
-  if (!state || document.hidden) return;
-  const data = await load(state.session.id).catch(() => null);
-  if (!data || !state) return;
-  if (!data.session) return go(null);
+  if (!state?.session || document.hidden) return;
+  const trip = state.trip;
+  const data = await load(trip).catch(() => null);
+  if (!data || state?.trip !== trip) return;
+  if (!data.session) return tripDeleted();
   Object.assign(state, data);
   // Don't wipe a half-filled form; only refresh its payer list.
   if (state.tab === 'add') {
@@ -224,7 +315,7 @@ const total = () => sum(state.bills.map(b => Number(b.amount)));
 
 function renderTotal() {
   const el = document.getElementById('total');
-  if (el) el.textContent = `${state.bills.length} 筆帳單 · 合計 ${money(total())}`;
+  if (el) el.textContent = `代碼 ${state.trip.code} · ${state.bills.length} 筆帳單 · 合計 ${money(total())}`;
 }
 
 function renderSession() {
@@ -232,6 +323,12 @@ function renderSession() {
   app.innerHTML = `
     <h1>${esc(state.session.name)}</h1>
     <p class="muted" id="total"></p>
+    ${state.fresh ? `
+      <section class="card invite">
+        <p><strong>行程已建立！</strong>把代碼傳給同行的朋友，他們在「加入朋友的行程」輸入後就能一起記帳。</p>
+        <div class="code">${state.trip.code}</div>
+        <button data-invite="1">複製邀請訊息</button>
+      </section>` : ''}
     <div class="tabs" role="tablist">${tabs.map(([k, label]) =>
       `<button role="tab" data-tab="${k}" aria-selected="${state.tab === k}">${label}</button>`).join('')}</div>
     <div id="tab">${{ add: addTab, bills: billsTab, stats: statsTab, split: splitTab }[state.tab]()}</div>`;
@@ -261,7 +358,7 @@ function addTab() {
     </form>`;
 }
 
-// Built-in categories plus any custom ones already used in this session.
+// Built-in categories plus any custom ones already used in this trip.
 const categories = () => [...new Set([...Object.keys(CATEGORIES), ...state.bills.map(b => b.category)])];
 
 function syncNew() {
@@ -332,7 +429,7 @@ function splitTab() {
         <output>${people}</output>
         <button data-step="1" aria-label="增加人數" ${people >= 50 ? 'disabled' : ''}>+</button>
       </div>
-      <p class="muted">包含沒付過錢的人。所有拿到連結的人都會看到同一個人數。</p>
+      <p class="muted">包含沒付過錢的人。行程裡的每個人都會看到同一個人數。</p>
     </section>`;
   if (!state.bills.length) return stepper + '<p class="empty">記第一筆帳後就能分帳。</p>';
   if (people < state.payers.length) {
@@ -364,23 +461,17 @@ function splitTab() {
 
 // ---------- Actions ----------
 
-async function createSession(form) {
-  const name = new FormData(form).get('name').trim();
-  if (!name) return;
-  const s = await insert('sessions', { name });
-  go(s.id);
-}
-
 async function saveBill(form) {
   const f = new FormData(form);
   const amount = Number(f.get('amount'));
   if (!(amount > 0)) return toast('請輸入金額');
+  const code = state.trip.code;
   let payerId = f.get('payer');
   if (payerId === NEW) {
     const name = f.get('newPayer').trim();
     if (!name) return toast('請輸入付款人名字');
     const existing = state.payers.find(p => p.name.toLowerCase() === name.toLowerCase());
-    payerId = existing ? existing.id : (await insert('payers', { session_id: state.session.id, name })).id;
+    payerId = existing ? existing.id : (await insert('payers', { session_id: state.session.id, name }, code)).id;
   }
   let category = f.get('category');
   if (category === NEW) {
@@ -392,9 +483,9 @@ async function saveBill(form) {
   await insert('bills', {
     session_id: state.session.id, payer_id: payerId, amount,
     description: f.get('description').trim(), category, spent_on: f.get('spent_on'),
-  });
+  }, code);
   store(`payer:${state.session.id}`, payerId);
-  Object.assign(state, await load(state.session.id));
+  Object.assign(state, await load(state.trip), { fresh: false });
   renderSession();
   toast(`已儲存 ${money(amount)}`);
 }
@@ -404,14 +495,28 @@ async function setPeople(step) {
   if (people < Math.max(1, state.payers.length) || people > 50) return;
   state.session.people = people;
   renderSession();
-  await api(`sessions?id=eq.${state.session.id}`, { method: 'PATCH', body: { people } });
+  await api(`sessions?id=eq.${state.session.id}`, { method: 'PATCH', body: { people }, code: state.trip.code });
+}
+
+// Copy the invite (link + code), then open the phone's share sheet if it has one.
+async function invite() {
+  const url = location.href.split('#')[0];
+  const text = `一起用「旅遊分帳」記「${state.session.name}」的帳吧！\n1. 打開 ${url}\n2. 在「加入朋友的行程」輸入代碼：${state.trip.code}`;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('已複製邀請訊息，貼給朋友吧');
+  } catch {
+    prompt('複製這段邀請訊息傳給朋友：', text);
+    return;
+  }
+  if (navigator.share) navigator.share({ text }).catch(() => {});
 }
 
 app.addEventListener('submit', e => {
   e.preventDefault();
   const form = e.target, btn = form.querySelector('button');
   btn.disabled = true;
-  (form.id === 'newSession' ? createSession(form) : saveBill(form))
+  ({ joinTrip, newTrip: createTrip, billForm: saveBill })[form.id](form)
     .catch(err => toast(err.message))
     .finally(() => { btn.disabled = false; });
 });
@@ -423,36 +528,29 @@ app.addEventListener('change', e => {
 app.addEventListener('click', e => {
   const el = e.target.closest('button');
   if (!el) return;
-  const { open, tab, step, delSession, delBill, name } = el.dataset;
+  const { open, tab, step, delTrip, leave, delBill } = el.dataset;
   let job;
   if (open) go(open);
   else if (tab) { state.tab = tab; renderSession(); }
   else if (step) job = setPeople(Number(step));
-  else if (delSession && confirm(`確定要刪除「${name}」和所有帳單嗎？刪除後無法復原。`)) {
-    job = api(`sessions?id=eq.${delSession}`, { method: 'DELETE' }).then(() => go(null));
-  } else if (delBill && confirm('確定刪除這筆帳單？')) {
-    job = api(`bills?id=eq.${delBill}`, { method: 'DELETE' })
+  else if (el.dataset.invite) invite();
+  else if (delTrip) job = deleteTrip(delTrip);
+  else if (leave) leaveTrip(leave);
+  else if (delBill && confirm('確定刪除這筆帳單？')) {
+    job = api(`bills?id=eq.${delBill}`, { method: 'DELETE', code: state.trip.code })
       .then(() => { state.bills = state.bills.filter(b => b.id !== delBill); renderSession(); });
   }
   job?.catch(err => toast(err.message));
 });
 
 homeBtn.addEventListener('click', () => go(null));
-
-// Everyone shares the same link and picks a trip on the home screen.
-shareBtn.addEventListener('click', async () => {
-  const url = location.href.split('#')[0];
-  try {
-    if (navigator.share) await navigator.share({ title: '旅遊分帳', url });
-    else { await navigator.clipboard.writeText(url); toast('已複製連結'); }
-  } catch {}
-});
+inviteBtn.addEventListener('click', invite);
 
 // Open a trip (or the trip list when id is null). Each phone remembers its last trip.
-function go(id) {
+function go(id, fresh = false) {
   clearInterval(timer);
   store('trip', id || '');
-  (id ? openSession(id) : showHome()).catch(err => {
+  (id ? openSession(id, fresh) : showHome()).catch(err => {
     app.innerHTML = `<p class="note">無法載入：${esc(err.message)}</p>`;
   });
 }
@@ -462,7 +560,7 @@ if (SUPABASE_URL.includes('YOUR-PROJECT')) {
   app.innerHTML = '<p class="note">Set SUPABASE_URL and SUPABASE_ANON_KEY at the top of this file first.</p>';
 } else {
   const last = store('trip');
-  go(UUID.test(last) ? last : null);
+  go(myTrips().some(t => t.id === last) ? last : null);
 }
 </script>
 </body>
