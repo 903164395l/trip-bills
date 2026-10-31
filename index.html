@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0f7b6c">
+<title>旅遊分帳</title>
+<style>
+:root {
+  --bg: #f6f5f2; --surface: #fff; --text: #1d1d1f; --muted: #6b6b70; --border: #e4e2dd;
+  --accent: #0f7b6c; --accent-ink: #fff; --accent-soft: #e2f1ee; --track: #eceae5;
+  --pos: #0f7b6c; --neg: #b93a2c;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141416; --surface: #1f1f22; --text: #f2f2f3; --muted: #9a9aa1; --border: #313136;
+    --accent: #3fb9a5; --accent-ink: #0b1f1c; --accent-soft: #1b3330; --track: #2c2c31;
+    --pos: #4fc7b2; --neg: #ef7a6b;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans TC", sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+.top {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px; background: var(--bg); border-bottom: 1px solid var(--border);
+}
+main { max-width: 520px; margin: 0 auto; padding: 16px 16px calc(32px + env(safe-area-inset-bottom)); }
+h1 { font-size: 22px; margin: 4px 0 2px; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+.muted { color: var(--muted); font-size: 14px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+.list { list-style: none; margin: 12px 0; padding: 0; }
+.row { display: flex; align-items: center; gap: 10px; }
+.grow { flex: 1; min-width: 0; display: flex; flex-direction: column; color: inherit; text-decoration: none; }
+.grow strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stack { display: flex; flex-direction: column; gap: 14px; }
+label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--muted); }
+input, select {
+  font: inherit; font-size: 16px; color: var(--text); background: var(--bg);
+  border: 1px solid var(--border); border-radius: 10px; padding: 11px 12px; width: 100%;
+}
+input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+input[name=amount] { font-size: 24px; font-weight: 600; }
+fieldset { border: 0; margin: 0; padding: 0; }
+legend { font-size: 14px; color: var(--muted); margin-bottom: 6px; padding: 0; }
+button {
+  font: inherit; font-weight: 600; border: 0; border-radius: 10px; padding: 12px 16px;
+  background: var(--accent); color: var(--accent-ink); cursor: pointer;
+}
+button:disabled { opacity: .5; }
+button.ghost { background: transparent; color: var(--accent); padding: 8px 10px; }
+button.pick { background: none; color: inherit; font-weight: inherit; padding: 0; text-align: left; }
+button.danger { color: var(--neg); }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip input { position: absolute; opacity: 0; pointer-events: none; }
+.chip span {
+  display: inline-block; padding: 8px 12px; border-radius: 999px; border: 1px solid var(--border);
+  color: var(--text); font-size: 14px; background: var(--bg);
+}
+.chip input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.chip input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tabs {
+  position: sticky; top: calc(49px + env(safe-area-inset-top)); z-index: 1; display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 4px; padding: 4px; margin: 12px 0; background: var(--track); border-radius: 12px;
+}
+.tabs button { background: transparent; color: var(--muted); padding: 9px 0; font-size: 14px; }
+.tabs button[aria-selected=true] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.bill .amt { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.icon { background: transparent; color: var(--muted); padding: 6px 8px; font-size: 20px; line-height: 1; }
+.bar { margin-bottom: 12px; }
+.bar:last-child { margin-bottom: 0; }
+.bar-head { display: flex; justify-content: space-between; gap: 8px; font-size: 14px; margin-bottom: 5px; }
+.bar-head span:last-child { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.track { height: 8px; background: var(--track); border-radius: 4px; overflow: hidden; }
+.fill { height: 100%; background: var(--accent); border-radius: 4px; }
+.kpi { font-size: 14px; color: var(--muted); }
+.kpi strong { display: block; font-size: 30px; color: var(--text); font-variant-numeric: tabular-nums; }
+.stepper { display: flex; align-items: center; gap: 16px; }
+.stepper button { width: 48px; height: 48px; padding: 0; font-size: 24px; background: var(--accent-soft); color: var(--accent); }
+.stepper output { font-size: 28px; font-weight: 700; min-width: 2ch; text-align: center; font-variant-numeric: tabular-nums; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 8px 4px; border-bottom: 1px solid var(--border); }
+th:first-child, td:first-child { text-align: left; overflow-wrap: anywhere; }
+th { color: var(--muted); font-weight: 500; }
+tr:last-child td { border-bottom: 0; }
+.pos { color: var(--pos); } .neg { color: var(--neg); }
+.transfer { padding: 10px 0; border-bottom: 1px solid var(--border); }
+.transfer:last-child { border-bottom: 0; padding-bottom: 0; }
+.transfer ul { list-style: none; margin: 6px 0 0; padding: 0; }
+.transfer li { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; padding: 2px 0; }
+.note { background: var(--accent-soft); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+.empty { text-align: center; color: var(--muted); padding: 28px 0; }
+#toast {
+  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+  max-width: calc(100% - 32px); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px;
+  font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none;
+}
+#toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<header class="top"><strong>旅遊分帳</strong><div><button id="homeBtn" class="ghost" hidden>切換行程</button><button id="shareBtn" class="ghost">分享連結</button></div></header>
+<main id="app"></main>
+<div id="toast" role="status"></div>
+<script>
+// Supabase project settings (Project Settings -> API). The anon / publishable key is meant to be
+// public in browser code; what it can do is limited by the policies in schema.sql.
+const SUPABASE_URL = 'https://vlxfnyvlijbnchjngmcn.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_8iftxZJUDFUbN6gvjSP0qQ_VtAOvvZR';
+
+const MAX_SESSIONS = 2;
+// Keys are the values stored in the database; values are what people see.
+const CATEGORIES = { Food: '餐飲', Transport: '交通', Lodging: '住宿', Activities: '門票活動', Shopping: '購物', Other: '其他' };
+const NEW = '__new__';
+const catLabel = c => CATEGORIES[c] ?? c; // custom categories are stored as typed
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+const app = document.getElementById('app');
+const homeBtn = document.getElementById('homeBtn');
+const shareBtn = document.getElementById('shareBtn');
+let state = null; // { session, payers, bills, tab }
+let timer = null;
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const money = n => 'NT$' + Math.round(n).toLocaleString('zh-TW');
+const sum = xs => xs.reduce((a, b) => a + b, 0);
+const today = () => new Date().toLocaleDateString('en-CA');
+const fmtDay = d => new Date(d + 'T00:00').toLocaleDateString('zh-TW', { month: 'short', day: 'numeric' });
+
+function store(key, value) {
+  try { return value === undefined ? localStorage.getItem(key) : localStorage.setItem(key, value); } catch { return null; }
+}
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => t.classList.remove('show'), 2400);
+}
+
+async function api(path, { method = 'GET', body, prefer } = {}) {
+  const headers = { apikey: SUPABASE_ANON_KEY, 'Content-Type': 'application/json' };
+  if (SUPABASE_ANON_KEY.startsWith('eyJ')) headers.Authorization = `Bearer ${SUPABASE_ANON_KEY}`; // legacy JWT anon key
+  if (prefer) headers.Prefer = prefer;
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, { method, headers, body: body && JSON.stringify(body) });
+  if (!res.ok) {
+    let msg = `連線失敗 (${res.status})`;
+    try { msg = (await res.json()).message || msg; } catch {}
+    throw new Error(msg);
+  }
+  return res.status === 204 ? null : res.json();
+}
+const insert = (table, row) => api(table, { method: 'POST', body: row, prefer: 'return=representation' }).then(r => r[0]);
+
+// ---------- Home: list of sessions ----------
+
+async function showHome() {
+  state = null;
+  homeBtn.hidden = true;
+  app.innerHTML = '<p class="empty">載入中…</p>';
+  const sessions = await api('sessions?select=id,name,created_at&order=created_at');
+  const full = sessions.length >= MAX_SESSIONS;
+  app.innerHTML = `
+    <h1>行程</h1>
+    <p class="muted">已使用 ${sessions.length} / ${MAX_SESSIONS} 個行程</p>
+    <ul class="list">${sessions.map(s => `
+      <li class="card row">
+        <button class="grow pick" data-open="${s.id}"><strong>${esc(s.name)}</strong>
+          <span class="muted">${fmtDay(s.created_at.slice(0, 10))} 開始</span></button>
+        <button class="ghost danger" data-del-session="${s.id}" data-name="${esc(s.name)}">刪除</button>
+      </li>`).join('')}</ul>
+    ${full
+      ? `<p class="note">最多同時 ${MAX_SESSIONS} 個行程。請先刪除已結束的行程，再開新的。</p>`
+      : `<form id="newSession" class="card stack">
+           <label>新行程<input name="name" required maxlength="40" placeholder="例：東京 2026/12" autocomplete="off"></label>
+           <button>建立行程</button>
+         </form>`}`;
+}
+
+// ---------- Session ----------
+
+async function load(id) {
+  const [sessions, payers, bills] = await Promise.all([
+    api(`sessions?id=eq.${id}&select=*`),
+    api(`payers?session_id=eq.${id}&select=*&order=created_at`),
+    api(`bills?session_id=eq.${id}&select=*&order=spent_on.desc,created_at.desc`),
+  ]);
+  return { session: sessions[0], payers, bills };
+}
+
+async function openSession(id) {
+  homeBtn.hidden = false;
+  app.innerHTML = '<p class="empty">載入中…</p>';
+  const data = await load(id);
+  if (!data.session) return go(null);
+  state = { ...data, tab: data.bills.length ? 'bills' : 'add' };
+  renderSession();
+  timer = setInterval(refresh, 15000);
+}
+
+async function refresh() {
+  if (!state || document.hidden) return;
+  const data = await load(state.session.id).catch(() => null);
+  if (!data || !state) return;
+  if (!data.session) return go(null);
+  Object.assign(state, data);
+  // Don't wipe a half-filled form; only refresh its payer list.
+  if (state.tab === 'add') {
+    const select = app.querySelector('select[name=payer]');
+    if (select && select.value !== NEW) select.innerHTML = payerOptions(select.value);
+    renderTotal();
+  } else renderSession();
+}
+
+const payerName = id => state.payers.find(p => p.id === id)?.name ?? '?';
+const total = () => sum(state.bills.map(b => Number(b.amount)));
+
+function renderTotal() {
+  const el = document.getElementById('total');
+  if (el) el.textContent = `${state.bills.length} 筆帳單 · 合計 ${money(total())}`;
+}
+
+function renderSession() {
+  const tabs = [['add', '記帳'], ['bills', '帳單'], ['stats', '統計'], ['split', '分帳']];
+  app.innerHTML = `
+    <h1>${esc(state.session.name)}</h1>
+    <p class="muted" id="total"></p>
+    <div class="tabs" role="tablist">${tabs.map(([k, label]) =>
+      `<button role="tab" data-tab="${k}" aria-selected="${state.tab === k}">${label}</button>`).join('')}</div>
+    <div id="tab">${{ add: addTab, bills: billsTab, stats: statsTab, split: splitTab }[state.tab]()}</div>`;
+  renderTotal();
+  if (state.tab === 'add') syncNew();
+}
+
+function payerOptions(selected) {
+  const last = store(`payer:${state.session.id}`);
+  const pick = [selected, last].find(id => state.payers.some(p => p.id === id)) ?? (state.payers.length ? state.payers[0].id : NEW);
+  return state.payers.map(p => `<option value="${p.id}" ${p.id === pick ? 'selected' : ''}>${esc(p.name)}</option>`).join('')
+    + `<option value="${NEW}" ${pick === NEW ? 'selected' : ''}>＋ 新增付款人…</option>`;
+}
+
+function addTab() {
+  return `
+    <form id="billForm" class="card stack">
+      <label>金額 (NT$)<input name="amount" type="number" inputmode="decimal" min="1" step="any" required placeholder="0"></label>
+      <label>項目<input name="description" maxlength="60" placeholder="例：鼎泰豐晚餐" autocomplete="off"></label>
+      <fieldset><legend>類別</legend><div class="chips">${[...categories(), NEW].map((c, i) =>
+        `<label class="chip"><input type="radio" name="category" value="${esc(c)}" ${i ? '' : 'checked'}><span>${c === NEW ? '＋ 新增' : esc(catLabel(c))}</span></label>`).join('')}</div></fieldset>
+      <label id="newCategoryWrap">新類別名稱<input name="newCategory" maxlength="20" placeholder="例：伴手禮" autocomplete="off"></label>
+      <label>付款人<select name="payer">${payerOptions()}</select></label>
+      <label id="newPayerWrap">新付款人名字<input name="newPayer" maxlength="30" placeholder="名字" autocomplete="off"></label>
+      <label>日期<input name="spent_on" type="date" value="${today()}" required></label>
+      <button>儲存</button>
+    </form>`;
+}
+
+// Built-in categories plus any custom ones already used in this session.
+const categories = () => [...new Set([...Object.keys(CATEGORIES), ...state.bills.map(b => b.category)])];
+
+function syncNew() {
+  const isNew = app.querySelector('select[name=payer]').value === NEW;
+  document.getElementById('newPayerWrap').hidden = !isNew;
+  app.querySelector('input[name=newPayer]').required = isNew;
+  const isNewCat = app.querySelector('input[name=category]:checked').value === NEW;
+  document.getElementById('newCategoryWrap').hidden = !isNewCat;
+  app.querySelector('input[name=newCategory]').required = isNewCat;
+}
+
+function billsTab() {
+  if (!state.bills.length) return '<p class="empty">還沒有帳單，先記一筆吧。</p>';
+  return `<ul class="list">${state.bills.map(b => `
+    <li class="card row bill">
+      <div class="grow"><strong>${esc(b.description || catLabel(b.category))}</strong>
+        <span class="muted">${esc(catLabel(b.category))} · ${esc(payerName(b.payer_id))} 付 · ${fmtDay(b.spent_on)}</span></div>
+      <div class="amt">${money(b.amount)}</div>
+      <button class="icon" data-del-bill="${b.id}" aria-label="刪除帳單">×</button>
+    </li>`).join('')}</ul>`;
+}
+
+function groupBy(keyOf) {
+  const m = new Map();
+  for (const b of state.bills) m.set(keyOf(b), (m.get(keyOf(b)) || 0) + Number(b.amount));
+  return [...m].sort((a, b) => b[1] - a[1]);
+}
+
+function bars(title, rows) {
+  const t = total(), max = rows[0][1];
+  return `<section class="card"><h2>${title}</h2>${rows.map(([label, v]) => `
+    <div class="bar">
+      <div class="bar-head"><span>${esc(label)}</span><span>${money(v)} <span class="muted">${Math.round(v / t * 100)}%</span></span></div>
+      <div class="track"><div class="fill" style="width:${v / max * 100}%"></div></div>
+    </div>`).join('')}</section>`;
+}
+
+function statsTab() {
+  if (!state.bills.length) return '<p class="empty">記第一筆帳後就會顯示統計。</p>';
+  return bars('依類別', groupBy(b => catLabel(b.category))) + bars('依付款人', groupBy(b => payerName(b.payer_id)));
+}
+
+// Everyone owes an equal share. Each person who owes pays every creditor in proportion
+// to how much that creditor is owed, so there is no arbitrary choice of who pays whom.
+function settle(people) {
+  const t = total(), share = t / people;
+  const balances = state.payers.map(p => {
+    const paid = sum(state.bills.filter(b => b.payer_id === p.id).map(b => Number(b.amount)));
+    return { name: p.name, paid, net: paid - share };
+  });
+  const creditors = balances.filter(b => b.net > 0.5);
+  const credit = sum(creditors.map(c => c.net));
+  const debtors = balances.filter(b => b.net < -0.5).map(b => ({ who: `${b.name} 付給`, owe: -b.net }));
+  const others = people - state.payers.length;
+  if (others > 0) debtors.push({ who: others === 1 ? '另外 1 位沒付過錢的人付給' : `另外 ${others} 位沒付過錢的人，每人付給`, owe: share });
+  const transfers = debtors.map(d => ({ ...d, to: creditors.map(c => ({ name: c.name, amount: d.owe * c.net / credit })) }));
+  return { t, share, balances, transfers };
+}
+
+function splitTab() {
+  const people = state.session.people;
+  const min = Math.max(1, state.payers.length);
+  const stepper = `
+    <section class="card">
+      <h2>總人數</h2>
+      <div class="stepper">
+        <button data-step="-1" aria-label="減少人數" ${people <= min ? 'disabled' : ''}>−</button>
+        <output>${people}</output>
+        <button data-step="1" aria-label="增加人數" ${people >= 50 ? 'disabled' : ''}>+</button>
+      </div>
+      <p class="muted">包含沒付過錢的人。所有拿到連結的人都會看到同一個人數。</p>
+    </section>`;
+  if (!state.bills.length) return stepper + '<p class="empty">記第一筆帳後就能分帳。</p>';
+  if (people < state.payers.length) {
+    return stepper + `<p class="note">目前有 ${state.payers.length} 位付款人，總人數至少要 ${state.payers.length} 人。</p>`;
+  }
+  const { t, share, balances, transfers } = settle(people);
+  return stepper + `
+    <section class="card">
+      <div class="kpi">每人應付<strong>${money(share)}</strong></div>
+      <p class="muted">${money(t)} ÷ ${people} 人</p>
+    </section>
+    <section class="card">
+      <h2>收支</h2>
+      <table>
+        <tr><th>付款人</th><th>已付</th><th>應收 / 應付</th></tr>
+        ${balances.map(b => `<tr><td>${esc(b.name)}</td><td>${money(b.paid)}</td>
+          <td class="${b.net >= 0 ? 'pos' : 'neg'}">${b.net >= 0 ? '+' : '−'}${money(Math.abs(b.net))}</td></tr>`).join('')}
+      </table>
+    </section>
+    <section class="card">
+      <h2>誰付給誰</h2>
+      ${transfers.length ? transfers.map(d => `
+        <div class="transfer"><strong>${esc(d.who)}</strong>
+          <ul>${d.to.map(c => `<li><span>→ ${esc(c.name)}</span><span>${money(c.amount)}</span></li>`).join('')}</ul>
+        </div>`).join('') : '<p class="muted">大家都已打平，不用再轉帳。</p>'}
+      <p class="muted">金額四捨五入到 NT$1。</p>
+    </section>`;
+}
+
+// ---------- Actions ----------
+
+async function createSession(form) {
+  const name = new FormData(form).get('name').trim();
+  if (!name) return;
+  const s = await insert('sessions', { name });
+  go(s.id);
+}
+
+async function saveBill(form) {
+  const f = new FormData(form);
+  const amount = Number(f.get('amount'));
+  if (!(amount > 0)) return toast('請輸入金額');
+  let payerId = f.get('payer');
+  if (payerId === NEW) {
+    const name = f.get('newPayer').trim();
+    if (!name) return toast('請輸入付款人名字');
+    const existing = state.payers.find(p => p.name.toLowerCase() === name.toLowerCase());
+    payerId = existing ? existing.id : (await insert('payers', { session_id: state.session.id, name })).id;
+  }
+  let category = f.get('category');
+  if (category === NEW) {
+    const name = f.get('newCategory').trim();
+    if (!name) return toast('請輸入類別名稱');
+    // Reuse a matching category (by stored value or shown name) instead of making a duplicate.
+    category = categories().find(c => [c, catLabel(c)].some(n => n.toLowerCase() === name.toLowerCase())) ?? name;
+  }
+  await insert('bills', {
+    session_id: state.session.id, payer_id: payerId, amount,
+    description: f.get('description').trim(), category, spent_on: f.get('spent_on'),
+  });
+  store(`payer:${state.session.id}`, payerId);
+  Object.assign(state, await load(state.session.id));
+  renderSession();
+  toast(`已儲存 ${money(amount)}`);
+}
+
+async function setPeople(step) {
+  const people = state.session.people + step;
+  if (people < Math.max(1, state.payers.length) || people > 50) return;
+  state.session.people = people;
+  renderSession();
+  await api(`sessions?id=eq.${state.session.id}`, { method: 'PATCH', body: { people } });
+}
+
+app.addEventListener('submit', e => {
+  e.preventDefault();
+  const form = e.target, btn = form.querySelector('button');
+  btn.disabled = true;
+  (form.id === 'newSession' ? createSession(form) : saveBill(form))
+    .catch(err => toast(err.message))
+    .finally(() => { btn.disabled = false; });
+});
+
+app.addEventListener('change', e => {
+  if (e.target.name === 'payer' || e.target.name === 'category') syncNew();
+});
+
+app.addEventListener('click', e => {
+  const el = e.target.closest('button');
+  if (!el) return;
+  const { open, tab, step, delSession, delBill, name } = el.dataset;
+  let job;
+  if (open) go(open);
+  else if (tab) { state.tab = tab; renderSession(); }
+  else if (step) job = setPeople(Number(step));
+  else if (delSession && confirm(`確定要刪除「${name}」和所有帳單嗎？刪除後無法復原。`)) {
+    job = api(`sessions?id=eq.${delSession}`, { method: 'DELETE' }).then(() => go(null));
+  } else if (delBill && confirm('確定刪除這筆帳單？')) {
+    job = api(`bills?id=eq.${delBill}`, { method: 'DELETE' })
+      .then(() => { state.bills = state.bills.filter(b => b.id !== delBill); renderSession(); });
+  }
+  job?.catch(err => toast(err.message));
+});
+
+homeBtn.addEventListener('click', () => go(null));
+
+// Everyone shares the same link and picks a trip on the home screen.
+shareBtn.addEventListener('click', async () => {
+  const url = location.href.split('#')[0];
+  try {
+    if (navigator.share) await navigator.share({ title: '旅遊分帳', url });
+    else { await navigator.clipboard.writeText(url); toast('已複製連結'); }
+  } catch {}
+});
+
+// Open a trip (or the trip list when id is null). Each phone remembers its last trip.
+function go(id) {
+  clearInterval(timer);
+  store('trip', id || '');
+  (id ? openSession(id) : showHome()).catch(err => {
+    app.innerHTML = `<p class="note">無法載入：${esc(err.message)}</p>`;
+  });
+}
+
+document.addEventListener('visibilitychange', refresh);
+if (SUPABASE_URL.includes('YOUR-PROJECT')) {
+  app.innerHTML = '<p class="note">Set SUPABASE_URL and SUPABASE_ANON_KEY at the top of this file first.</p>';
+} else {
+  const last = store('trip');
+  go(UUID.test(last) ? last : null);
+}
+</script>
+</body>
+</html>
