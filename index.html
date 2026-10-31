@@ -218,13 +218,15 @@ async function showHome() {
 
 async function joinTrip(form) {
   const code = new FormData(form).get('code').toUpperCase().replace(/[\s-]/g, '');
-  if (!CODE.test(code)) return toast('代碼是 4 個英文字母或數字');
+  if (!/^[A-Z0-9]{4}$/.test(code)) return toast('代碼是 4 位英文字母或數字');
+  const notFound = () => toast('抱歉，這個代碼不存在，請再確認一次');
+  if (!CODE.test(code)) return notFound(); // uses 0/O/1/I, which codes never contain
   const trips = myTrips();
   const mine = trips.find(t => t.code === code);
   if (mine) return go(mine.id);
   if (trips.length >= MAX_TRIPS) return toast(`每支手機最多加入 ${MAX_TRIPS} 個行程`);
   const s = await findTrip(code);
-  if (!s) return toast('找不到這個代碼的行程，請確認代碼');
+  if (!s) return notFound();
   saveTrips([...trips, { id: s.id, code, name: s.name, owner: false }]);
   go(s.id);
 }
