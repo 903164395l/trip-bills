@@ -25,6 +25,7 @@ create table bills (
   category text not null check (length(category) between 1 and 20),
   amount numeric(12, 2) not null check (amount > 0 and amount < 10000000),
   spent_on date not null default current_date,
+  owner_key text,                                                  -- secret kept on the phone that entered it
   created_at timestamptz not null default now()
 );
 
@@ -32,7 +33,7 @@ create index on payers (session_id);
 create index on bills (session_id);
 
 -- Trips are private: every request must send the trip's code in the x-trip-code header,
--- and deleting a trip also needs the creator's key in x-owner-key.
+-- and deleting a trip (or changing a bill) also needs the author's phone key in x-owner-key.
 -- Helpers live outside the public schema so they are not exposed through the API.
 create schema private;
 grant usage on schema private to anon;
@@ -52,12 +53,21 @@ language sql stable security definer set search_path = public as $$
     and code = private.header('x-trip-code') and owner_key = private.header('x-owner-key'))
 $$;
 
+create function private.owns_bill(bid uuid) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from bills where id = bid and owner_key = private.header('x-owner-key'))
+$$;
+
 grant execute on all functions in schema private to anon;
 
 -- owner_key can be written but never read back.
 grant select (id, name, people, code, created_at), insert (name, code, owner_key), update (people), delete
   on sessions to anon;
-grant select, insert, delete on payers, bills to anon;
+grant select, insert, delete on payers to anon;
+grant select (id, session_id, payer_id, description, category, amount, spent_on, created_at),
+  insert (id, session_id, payer_id, description, category, amount, spent_on, owner_key),
+  update (payer_id, description, category, amount, spent_on), delete
+  on bills to anon;
 
 alter table sessions enable row level security;
 alter table payers enable row level security;
@@ -70,5 +80,8 @@ create policy "creator deletes" on sessions for delete to anon using (private.ow
 
 create policy "members only" on payers for all to anon
   using (private.in_trip(session_id)) with check (private.in_trip(session_id));
-create policy "members only" on bills for all to anon
-  using (private.in_trip(session_id)) with check (private.in_trip(session_id));
+create policy "members read" on bills for select to anon using (private.in_trip(session_id));
+create policy "members add" on bills for insert to anon with check (private.in_trip(session_id));
+create policy "author edits" on bills for update to anon
+  using (private.in_trip(session_id) and private.owns_bill(id)) with check (private.in_trip(session_id));
+create policy "author deletes" on bills for delete to anon using (private.in_trip(session_id) and private.owns_bill(id));
